@@ -1,5 +1,8 @@
 // 从 main 的页面与订阅函数拆出；每次调用的配置相互隔离。
 import { createHash } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { buildSingboxConfig, normalizeNodeNames } from './singbox.mjs';
 export function createSubscriptionEngine(config, uuid) {
@@ -4485,9 +4488,7 @@ async function 获取值解析新地址列表() {
       }
       return 结果列表110;
     }
-    const 响应107 = await fetch(网址113);
-    if (!响应107.ok) return [];
-    const 文本106 = await 响应107.text();
+    const 文本106 = await 抓取列表文本(网址113, 10000);
     const 结果列表105 = [];
     const 行列表104 = 文本106.trim().replace(/\r/g, "").split('\n');
     const 值正则 = /^([^:]+):(\d+)#(.*)$/;
@@ -4739,6 +4740,85 @@ function 更新自定义优选来源值() {
   }
 }
 
+// 在线列表抓取：DNS 解析后 IPv4 优先、多地址回退、跟随重定向、单次总预算 12 秒。
+// 不依赖运行平台的 IPv6 出站（Vercel 等只有 IPv4 的环境也能取到）。
+function 解码列表文本(缓冲, 内容类型) {
+  const 字符集 = String(内容类型 || '').toLowerCase().match(/charset=([^\s;]+)/)?.[1] || '';
+  let 解码器列表 = ['utf-8', 'gb2312'];
+  if (字符集.includes('gb') || 字符集.includes('gbk')) 解码器列表 = ['gb2312', 'utf-8'];
+  for (const 解码器 of 解码器列表) {
+    try {
+      const 文本 = new TextDecoder(解码器).decode(缓冲);
+      if (文本 && 文本.length > 0 && !文本.includes('\ufffd')) return 文本;
+    } catch {}
+  }
+  return new TextDecoder().decode(缓冲);
+}
+
+function 请求列表文本一次(网址对象, 地址, 超时) {
+  return new Promise((resolve, reject) => {
+    const 请求函数 = 网址对象.protocol === 'https:' ? httpsRequest : httpRequest;
+    const 请求 = 请求函数(网址对象, {
+      agent: false,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CFnewPanel)', Accept: '*/*' },
+      ...(地址 ? { lookup: (_主机, 选项, 回调) => 选项.all ? 回调(null, [地址]) : 回调(null, 地址.address, 地址.family) } : {}),
+    }, 响应 => {
+      const 块列表 = [];
+      let 大小 = 0;
+      响应.on('data', 块 => {
+        大小 += 块.length;
+        if (大小 > 1048576) { 请求.destroy(new Error('来源内容过大')); return; }
+        块列表.push(块);
+      });
+      响应.on('error', reject);
+      响应.on('end', () => resolve({ status: 响应.statusCode, headers: 响应.headers, body: Buffer.concat(块列表) }));
+    });
+    const 定时器 = setTimeout(() => 请求.destroy(new Error('来源请求超时')), Math.max(1000, 超时));
+    请求.on('close', () => clearTimeout(定时器));
+    请求.on('error', reject);
+    请求.end();
+  });
+}
+
+async function 抓取列表文本(网址, 超时 = 8000) {
+  let 当前网址;
+  try {
+    当前网址 = new URL(网址);
+  } catch {
+    throw new Error('来源地址格式无效');
+  }
+  const 截止时间 = Date.now() + Math.max(3000, Math.min(超时 * 2, 20000));
+  for (let 跳转 = 0; 跳转 <= 3; 跳转++) {
+    if (!['http:', 'https:'].includes(当前网址.protocol)) throw new Error('来源须为 HTTP 或 HTTPS 地址');
+    let 地址列表 = [];
+    try {
+      地址列表 = await lookup(当前网址.hostname.replace(/^\[|\]$/g, ''), { all: true });
+    } catch {}
+    地址列表.sort((甲, 乙) => (甲.family === 4 ? 0 : 1) - (乙.family === 4 ? 0 : 1));
+    const 候选地址 = 地址列表.length > 0 ? 地址列表.slice(0, 4) : [null];
+    let 最后错误 = null;
+    for (const 地址 of 候选地址) {
+      try {
+        const 剩余 = 截止时间 - Date.now();
+        if (剩余 <= 0) throw new Error('来源请求超时');
+        const 响应 = await 请求列表文本一次(当前网址, 地址, Math.min(超时, 剩余));
+        if ([301, 302, 303, 307, 308].includes(响应.status) && 响应.headers.location) {
+          当前网址 = new URL(响应.headers.location, 当前网址);
+          最后错误 = null;
+          break;
+        }
+        if (响应.status !== 200) throw new Error('列表来源返回 HTTP ' + 响应.status);
+        return 解码列表文本(响应.body, 响应.headers['content-type']);
+      } catch (错误) {
+        最后错误 = 错误;
+      }
+    }
+    if (!最后错误) continue;
+    throw 最后错误;
+  }
+  throw new Error('列表来源重定向过多');
+}
+
 async function 获取优选接口(网址列表, 默认端口 = '443', 超时 = 8000) {
   if (!网址列表?.length) return [];
   const 结果列表 = new Set();
@@ -4746,43 +4826,8 @@ async function 获取优选接口(网址列表, 默认端口 = '443', 超时 = 8
   const 所有URL结果 = await Promise.allSettled(网址列表.map(async 网址 => {
     const 当前结果 = [];
     try {
-      const 控制器 = new AbortController();
-      const 超时标识 = setTimeout(() => 控制器.abort(), 超时);
-      const 响应 = await fetch(网址, {
-        signal: 控制器.signal
-      });
-      clearTimeout(超时标识);
-      let 文本 = '';
-      try {
-        const 缓冲 = await 响应.arrayBuffer();
-        const 内容类型 = (响应.headers.get('content-type') || '').toLowerCase();
-        const 字符集 = 内容类型.match(/charset=([^\s;]+)/i)?.[1]?.toLowerCase() || '';
-        let 解码器列表 = ['utf-8', 'gb2312'];
-        if (字符集.includes('gb') || 字符集.includes('gbk') || 字符集.includes('gb2312')) {
-          解码器列表 = ['gb2312', 'utf-8'];
-        }
-        let 解码成功 = false;
-        for (const 解码器 of 解码器列表) {
-          try {
-            const 已解码 = new TextDecoder(解码器).decode(缓冲);
-            if (已解码 && 已解码.length > 0 && !已解码.includes('\ufffd')) {
-              文本 = 已解码;
-              解码成功 = true;
-              break;
-            } else if (已解码 && 已解码.length > 0) {
-              continue;
-            }
-          } catch (事件值16) {
-            continue;
-          }
-        }
-        if (!解码成功) {
-          文本 = await 响应.text();
-        }
-        if (!文本 || 文本.trim().length === 0) {
-          return 当前结果;
-        }
-      } catch (事件值15) {
+      const 文本 = await 抓取列表文本(网址, 超时);
+      if (!文本 || 文本.trim().length === 0) {
         return 当前结果;
       }
       const 行列表 = 文本.trim().split('\n').map(行值14 => 行值14.trim()).filter(行值 => 行值);
@@ -4828,7 +4873,9 @@ async function 获取优选接口(网址列表, 默认端口 = '443', 超时 = 8
           });
         }
       }
-    } catch (事件值) {}
+    } catch (错误) {
+      console.warn('[cfnew-panel] 优选来源抓取失败：' + 网址 + '（' + (错误?.message || 错误) + '）');
+    }
     return 当前结果;
   }));
   for (const 结果 of 所有URL结果) {

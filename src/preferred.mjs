@@ -72,7 +72,15 @@ export function normalizePreferredList(text, defaultPort = '443') {
 export async function fetchPreferredList(value, signal) {
   let url = new URL(value);
   for (let redirects = 0; redirects <= 3; redirects++) {
-    const response = await readPublic(url, { signal });
+    // 同一域名可能同时解析出 IPv4/IPv6；Vercel 等环境没有 IPv6 出站，IPv4 优先并逐个回退。
+    const addresses = (await resolveAddress(url.hostname)).sort((a, b) => (a.family === 4 ? 0 : 1) - (b.family === 4 ? 0 : 1));
+    let response = null;
+    let lastError = null;
+    for (const pinned of addresses.slice(0, 3)) {
+      try { response = await readPublic(url, { address: pinned, signal }); break; }
+      catch (error) { lastError = error; if (signal?.aborted) throw error; }
+    }
+    if (!response) throw lastError || new Error('列表来源请求失败');
     if ([301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
       url = new URL(response.headers.location, url); continue;
     }
