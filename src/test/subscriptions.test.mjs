@@ -102,3 +102,13 @@ test('没有备注的压缩IPv6仍生成默认名称，裸地址不误拆端口'
   assert.ok(links.every(link => link.hostname === '[2606:4700::1111]'));
   assert.ok(links.every(link => decodeURIComponent(link.hash.slice(1)).startsWith('IPv6优选-')));
 });
+
+test('域名无备注时用域名本身命名，带备注保留备注', async () => {
+  const yx = 'example.com:2053,example.org:8443#我的域名';
+  const text = Buffer.from(await subscription('base64', { yx, epd: 'yes', et: 'no', ex: 'no' }), 'base64').toString('utf8');
+  const names = text.trim().split('\n').map(link => decodeURIComponent(new URL(link).hash.slice(1)));
+  assert.equal(names.length, 2);
+  assert.ok(names.some(name => name.startsWith('example.com-')), names.join(','));
+  assert.ok(names.some(name => name.startsWith('我的域名-')), names.join(','));
+  assert.ok(names.every(name => !name.startsWith('优选域名-')), names.join(','));
+});
