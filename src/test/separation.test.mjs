@@ -134,7 +134,7 @@ test('生成的XHTTP短路径及客户端尾斜杠能进入传输，短路径不
   assert.equal(link.searchParams.get('alpn'), 'h2');
   const path = link.searchParams.get('path');
   const result = await worker.fetch(req(path + '/', { method: 'POST', body: new Uint8Array([0]) }), { u: uuid, ex: 'yes' });
-  // 不完整首包必须由传输层解析拒绝（400，对齐完整版内核）而不是路由不匹配的 404；旧内核返回 502。
+  // 不完整首包必须由传输层解析拒绝（core-only 内核 502，完整版内核 400）而不是路由不匹配的 404。
   assert.ok([400, 502].includes(result.status), '不完整首包应由传输解析拒绝，不能因为路由不匹配返回404，实际 ' + result.status);
   assert.equal((await worker.fetch(req(path + '/api/config'), { u: uuid })).status, 404);
 });
